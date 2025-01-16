@@ -1,85 +1,62 @@
 <?php
 $dbh = new PDO('mysql:host=mysql;dbname=techc', 'root', '');
-if (isset($_POST['body'])) {
-  // POSTで送られてくるフォームパラメータ body がある場合
-  $image_filename = null;
-  if (isset($_FILES['image']) && !empty($_FILES['image']['tmp_name'])) {
-    // アップロードされた画像がある場合
-    if (preg_match('/^image\//', mime_content_type($_FILES['image']['tmp_name'])) !== 1) {
-                            // アップロードされたものが画像ではなかった場合
-      header("HTTP/1.1 302 Found");
-    header("Location: ./zenkikadai1.php");
-  }
-  // 元のファイル名から拡張子を取得
-  $pathinfo = pathinfo($_FILES['image']['name']);
-  $extension = $pathinfo['extension'];
-  // 新しいファイル名を決める。他の投稿の画像ファイルと重複しないように時間+乱数で決める。
-  $image_filename = strval(time()) . bin2hex(random_bytes(25)) . '.' . $extension;
-  $filepath =  '/var/www/upload/image/' . $image_filename;
-  move_uploaded_file($_FILES['image']['tmp_name'], $filepath);
-  }
-  // insertする
-  $insert_sth = $dbh->prepare("INSERT INTO zenkikadai (body, image_filename) VALUES (:body, :image_filename)");
-  $insert_sth->execute([
-      ':body' => $_POST['body'],
-      ':image_filename' => $image_filename,
-  ]);
-  // 処理が終わったらリダイレクトする
-  // リダイレクトしないと，リロード時にまた同じ内容でPOSTすることになる
-  header("HTTP/1.1 302 Found");
-  header("Location: ./zenkikadai1.php");
-  return;
-}
-// いままで保存してきたものを取得
-$select_sth = $dbh->prepare('SELECT * FROM zenkikadai ORDER BY created_at DESC');
+session_start();
+
+// 投稿データを取得。紐づく会員情報も結合し同時に取得する。
+$select_sth = $dbh->prepare(
+  'SELECT bbs_entries.*, users.name AS user_name, users.icon_filename AS user_icon_filename'
+  . ' FROM bbs_entries INNER JOIN users ON bbs_entries.user_id = users.id'
+  . ' ORDER BY bbs_entries.created_at DESC'
+);
 $select_sth->execute();
+// bodyのHTMLを出力するための関数を用意する
+function bodyFilter (string $body): string
+{
+  $body = htmlspecialchars($body); // エスケープ処理
+  $body = nl2br($body); // 改行文字を<br>要素に変換
+  // >>1 といった文字列を該当番号の投稿へのページ内リンクとする (レスアンカー機能)
+  // 「>」(半角の大なり記号)は htmlspecialchars() でエスケープされているため注意
+  $body = preg_replace('/&gt;&gt;(\d+)/', '<a href="#entry$1">&gt;&gt;$1</a>', $body);
+  return $body;
+}
 ?>
-
-
-<!-- フォームのPOST先はこのファイル自身にする -->
-<form method="POST" action="./zenkikadai1.php" enctype="multipart/form-data">
-<textarea name="body"></textarea>
-<div style="margin: 1em 0;">
-<input type="file" accept="image/*" name="image" id="imageInput">
-</div>
-<button type="submit">送信</button>
-</form>
+<?php if(empty($_SESSION['login_user_id'])): ?>
+  <a href="/login.php">ログイン</a>して自分のタイムラインを閲覧しましょう！
+<?php else: ?>
+  <a href="/timeline.php">タイムラインはこちら</a>
+<?php endif; ?>
 <hr>
 <?php foreach($select_sth as $entry): ?>
-<dl style="margin-bottom: 1em; padding-bottom: 1em; border-bottom: 1px solid #ccc;">
-<!-- 個別ページへの遷移 -->
-<a href="./zenkikadai1_view.php?id=<?= $entry['id'] ?>">
-<div>
-<p><?= $entry['id'] ?></p>
-<p><?= $entry['created_at'] ?></p>
-</div>
-<dt>内容</dt>
-<dd>
-<?= nl2br(htmlspecialchars($entry['body'])) // 必ず htmlspecialchars() すること ?>
-<?php if(!empty($entry['image_filename'])): // 画像がある場合は img 要素を使って表示 ?>
-<div>
-<img src="/image/<?= $entry['image_filename'] ?>" style="max-height: 10em;">
-</div>
-<?php endif; ?>
-</dd>
-</a>
-</dl>
+  <dl style="margin-bottom: 1em; padding-bottom: 1em; border-bottom: 1px solid #ccc;">
+    <dt id="entry<?= htmlspecialchars($entry['id']) ?>">
+      番号
+    </dt>
+    <dd>
+      <?= htmlspecialchars($entry['id']) ?>
+    </dd>
+    <dt>
+      投稿者
+    </dt>
+    <dd>
+      <a href="/profile.php?user_id=<?= $entry['user_id'] ?>">
+        <?php if(!empty($entry['user_icon_filename'])): // アイコン画像がある場合は表示 ?>
+        <img src="/image/<?= $entry['user_icon_filename'] ?>"
+          style="height: 2em; width: 2em; border-radius: 50%; object-fit: cover;">
+        <?php endif; ?>
+        <?= htmlspecialchars($entry['user_name']) ?>
+        (ID: <?= htmlspecialchars($entry['user_id']) ?>)
+      </a>
+    </dd>
+    <dt>日時</dt>
+    <dd><?= $entry['created_at'] ?></dd>
+    <dt>内容</dt>
+    <dd>
+      <?= bodyFilter($entry['body']) ?>
+      <?php if(!empty($entry['image_filename'])): ?>
+      <div>
+        <img src="/image/<?= $entry['image_filename'] ?>" style="max-height: 10em;">
+      </div>
+      <?php endif; ?>
+    </dd>
+  </dl>
 <?php endforeach ?>
-<!-- 5MB以下の画像をアップロードできないようにする -->
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-    const imageInput = document.getElementById("imageInput");
-    imageInput.addEventListener("change", () => {
-        if (imageInput.files.length < 1) {
-        // 未選択の場合
-        return;
-        }
-        if (imageInput.files[0].size > 5 * 1024 * 1024) {
-        // ファイルが5MBより多い場合
-        alert("5MB以下のファイルを選択してください。");
-        imageInput.value = "";
-        }
-        });
-    });
-</script>
-
